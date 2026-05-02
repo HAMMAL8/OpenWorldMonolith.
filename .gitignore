@@ -1,0 +1,19 @@
+# PSP Build Artifacts
+*.elf
+*.prx
+*.o
+EBOOT.PBP
+
+# PSP Disc Directory
+PSP_GAME/
+
+# PSPSDK
+psp/sdk/
+
+# macOS
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
