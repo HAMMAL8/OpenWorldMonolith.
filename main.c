@@ -4,40 +4,72 @@
 #include <pspdisplay.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 PSP_MODULE_INFO("OpenWorldMonolith", 0, 1, 0);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 
-#define MAX_PROJECTILES 5
-#define MAX_ENEMIES 3
+#define SCREEN_W 60
+#define SCREEN_H 34
+#define MAP_WIDTH 128
+#define MAP_HEIGHT 128
+
+#define MAX_VEHICLES 20
+#define MAX_NPCS 15
 #define MAX_PLAYER_HP 5
-#define KILLS_TO_WIN 10
-#define WORLD_WIDTH 480
-#define WORLD_HEIGHT 272
-#define FIRE_COOLDOWN 20
-#define RESPAWN_TIME 180
+#define MAX_WANTED_LEVEL 5
+
+#define TILE_GRASS '.'
+#define TILE_ROAD '#'
+#define TILE_BUILDING 'B'
+#define TILE_BUILDING_ALT '='
+
+#define VEHICLE_ENTER_DIST 2.0f
+#define NPC_SPAWN_DIST 25
+
+#define ROAD_SPACING 16
+#define PLAYER_SPEED 0.3f
+#define VEHICLE_SPEED 0.8f
+#define NPC_SPEED 0.25f
+
+#define WANTED_DECAY_TIME 300
+#define WANTED_STAR_THRESHOLD 50
 
 typedef struct {
-    int x, y, active;
-} Projectile;
+    float x, y;
+    int active;
+    int type;
+} Vehicle;
 
 typedef struct {
-    int x, y, hp, alive, dir, hitTimer, respawnTimer, initX, initY;
-} Enemy;
+    float x, y;
+    int active;
+    int type;
+    int hp;
+    int isPolice;
+} NPC;
 
 typedef struct {
-    int x, y, hp, invincibleTimer;
+    float x, y;
+    int hp;
+    int inVehicle;
+    int vehicleIndex;
+    int wantedLevel;
+    int wantedScore;
+    int wantedTimer;
 } Player;
 
-// Globals
+char worldMap[MAP_HEIGHT][MAP_WIDTH];
 Player player;
-Projectile shots[MAX_PROJECTILES];
-Enemy enemies[MAX_ENEMIES];
-int score = 0;
-int fireCooldown = 0;
+Vehicle vehicles[MAX_VEHICLES];
+NPC npcs[MAX_NPCS];
+float cameraX, cameraY;
 int gameState = 0;
+int score = 0;
+int frameCount = 0;
 
-// PSP Exit Handlers
+static char lineBuffer[SCREEN_W + 1];
+
 int exit_callback(int arg1, int arg2, void *common) {
     sceKernelExitGame();
     return 0;
@@ -56,168 +88,43 @@ int SetupCallbacks(void) {
     return thid;
 }
 
-// Initialize game state
-void initGame() {
-    player.x = 240;
-    player.y = 136;
-    player.hp = MAX_PLAYER_HP;
-    player.invincibleTimer = 0;
-
-    memset(shots, 0, sizeof(shots));
-
-    enemies[0].x = 100;
-    enemies[0].y = 100;
-    enemies[0].initX = 100;
-    enemies[0].initY = 100;
-    enemies[0].hp = 3;
-    enemies[0].alive = 1;
-    enemies[0].dir = 1;
-    enemies[0].hitTimer = 0;
-    enemies[0].respawnTimer = 0;
-
-    enemies[1].x = 350;
-    enemies[1].y = 180;
-    enemies[1].initX = 350;
-    enemies[1].initY = 180;
-    enemies[1].hp = 3;
-    enemies[1].alive = 1;
-    enemies[1].dir = -1;
-    enemies[1].hitTimer = 0;
-    enemies[1].respawnTimer = 0;
-
-    enemies[2].x = 200;
-    enemies[2].y = 60;
-    enemies[2].initX = 200;
-    enemies[2].initY = 60;
-    enemies[2].hp = 3;
-    enemies[2].alive = 1;
-    enemies[2].dir = 1;
-    enemies[2].hitTimer = 0;
-    enemies[2].respawnTimer = 0;
-
-    score = 0;
-    fireCooldown = 0;
-    gameState = 0;
+int isSolid(int x, int y) {
+    if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT) return 1;
+    return (worldMap[y][x] == TILE_BUILDING || worldMap[y][x] == TILE_BUILDING_ALT);
 }
 
-// Reset game state for restart
-void resetGame() {
-    initGame();
-}
-
-// Title screen
-void showTitleScreen() {
-    int blink = 0;
-    while (1) {
-        pspDebugScreenClear();
-        pspDebugScreenSetXY(10, 7);
-        pspDebugScreenPrintf("=== OpenWorldMonolith ===");
-
-        if (blink < 30) {
-            pspDebugScreenSetXY(13, 10);
-            pspDebugScreenPrintf("Press START to Begin");
-        }
-
-        blink = (blink + 1) % 60;
-
-        SceCtrlData pad;
-        sceCtrlReadBufferPositive(&pad, 1);
-        if (pad.Buttons & PSP_CTRL_START) break;
-        sceDisplayWaitVblankStart();
-    }
-    pspDebugScreenClear();
-}
-
-// Game Over screen
-void showGameOverScreen() {
-    int blink = 0;
-    while (1) {
-        pspDebugScreenClear();
-        pspDebugScreenSetXY(15, 10);
-        pspDebugScreenPrintf("=== GAME OVER ===");
-
-        pspDebugScreenSetXY(10, 13);
-        pspDebugScreenPrintf("Final Score: %d", score);
-
-        if (blink < 30) {
-            pspDebugScreenSetXY(11, 16);
-            pspDebugScreenPrintf("Press START to Restart");
-        }
-
-        blink = (blink + 1) % 60;
-
-        SceCtrlData pad;
-        sceCtrlReadBufferPositive(&pad, 1);
-        if (pad.Buttons & PSP_CTRL_START) {
-            resetGame();
-            break;
-        }
-        sceDisplayWaitVblankStart();
-    }
-    pspDebugScreenClear();
-}
-
-// Win screen
-void showWinScreen() {
-    int blink = 0;
-    while (1) {
-        pspDebugScreenClear();
-        pspDebugScreenSetXY(15, 10);
-        pspDebugScreenPrintf("=== YOU WIN! ===");
-
-        pspDebugScreenSetXY(10, 13);
-        pspDebugScreenPrintf("All %d enemies defeated!", KILLS_TO_WIN);
-
-        if (blink < 30) {
-            pspDebugScreenSetXY(11, 16);
-            pspDebugScreenPrintf("Press START to Play Again");
-        }
-
-        blink = (blink + 1) % 60;
-
-        SceCtrlData pad;
-        sceCtrlReadBufferPositive(&pad, 1);
-        if (pad.Buttons & PSP_CTRL_START) {
-            resetGame();
-            break;
-        }
-        sceDisplayWaitVblankStart();
-    }
-    pspDebugScreenClear();
-}
-
-// Game Systems
-void fireShot() {
-    if (fireCooldown > 0) return;
-
-    for (int i = 0; i < MAX_PROJECTILES; i++) {
-        if (!shots[i].active) {
-            shots[i].x = player.x + 8;
-            shots[i].y = player.y;
-            shots[i].active = 1;
-            fireCooldown = FIRE_COOLDOWN;
-            break;
+void initMap() {
+    for (int y = 0; y < MAP_HEIGHT; y++) {
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            worldMap[y][x] = TILE_GRASS;
         }
     }
-}
 
-void updateShots() {
-    for (int i = 0; i < MAX_PROJECTILES; i++) {
-        if (shots[i].active) {
-            shots[i].x += 5;
-            if (shots[i].x > WORLD_WIDTH) shots[i].active = 0;
+    for (int y = 0; y < MAP_HEIGHT; y += ROAD_SPACING) {
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            worldMap[y][x] = TILE_ROAD;
+            if (y + 1 < MAP_HEIGHT) worldMap[y + 1][x] = TILE_ROAD;
+        }
+    }
 
-            for (int j = 0; j < MAX_ENEMIES; j++) {
-                Enemy *e = &enemies[j];
-                if (e->alive && shots[i].x > e->x - 4 && shots[i].x < e->x + 12 &&
-                    shots[i].y > e->y - 4 && shots[i].y < e->y + 12) {
-                    shots[i].active = 0;
-                    e->hp--;
-                    e->hitTimer = 30;
-                    if (e->hp <= 0) {
-                        e->alive = 0;
-                        e->respawnTimer = RESPAWN_TIME;
-                        score++;
+    for (int x = 0; x < MAP_WIDTH; x += ROAD_SPACING) {
+        for (int y = 0; y < MAP_HEIGHT; y++) {
+            worldMap[y][x] = TILE_ROAD;
+            if (x + 1 < MAP_WIDTH) worldMap[y][x + 1] = TILE_ROAD;
+        }
+    }
+
+    for (int y = 4; y < MAP_HEIGHT - 4; y += ROAD_SPACING) {
+        for (int x = 4; x < MAP_WIDTH - 4; x += ROAD_SPACING) {
+            int blockW = ROAD_SPACING - 4;
+            int blockH = ROAD_SPACING - 4;
+            
+            for (int by = 0; by < blockH && (y + by) < MAP_HEIGHT; by++) {
+                for (int bx = 0; bx < blockW && (x + bx) < MAP_WIDTH; bx++) {
+                    if ((bx + by) % 3 == 0) {
+                        worldMap[y + by][x + bx] = TILE_BUILDING;
+                    } else {
+                        worldMap[y + by][x + bx] = TILE_BUILDING_ALT;
                     }
                 }
             }
@@ -225,84 +132,245 @@ void updateShots() {
     }
 }
 
-void updateEnemies() {
-    for (int i = 0; i < MAX_ENEMIES; i++) {
-        Enemy *e = &enemies[i];
-
-        if (!e->alive) {
-            if (e->respawnTimer > 0) {
-                e->respawnTimer--;
-                if (e->respawnTimer <= 0) {
-                    e->x = e->initX;
-                    e->y = e->initY;
-                    e->hp = 3;
-                    e->alive = 1;
+void spawnVehicle(int index) {
+    int attempts = 0;
+    while (attempts < 100) {
+        int x = rand() % MAP_WIDTH;
+        int y = rand() % MAP_HEIGHT;
+        
+        if (worldMap[y][x] == TILE_ROAD) {
+            int clear = 1;
+            for (int i = 0; i < MAX_VEHICLES; i++) {
+                if (i != index && vehicles[i].active) {
+                    float dx = vehicles[i].x - x;
+                    float dy = vehicles[i].y - y;
+                    if (dx * dx + dy * dy < 9.0f) {
+                        clear = 0;
+                        break;
+                    }
                 }
             }
-            continue;
+            
+            if (clear) {
+                vehicles[index].x = (float)x;
+                vehicles[index].y = (float)y;
+                vehicles[index].active = 1;
+                vehicles[index].type = rand() % 3;
+                return;
+            }
         }
+        attempts++;
+    }
+    vehicles[index].active = 0;
+}
 
-        e->x += e->dir * 2;
-        if (e->x < 10 || e->x > 440) e->dir *= -1;
-
-        if (abs(player.x - e->x) < 12 && abs(player.y - e->y) < 12 && player.invincibleTimer == 0) {
-            player.hp--;
-            player.invincibleTimer = 60;
-        }
-
-        if (e->hitTimer > 0) e->hitTimer--;
+void spawnNPC(int index, int forcePolice) {
+    npcs[index].active = 1;
+    npcs[index].hp = 2;
+    npcs[index].isPolice = forcePolice;
+    
+    float angle = (float)(rand() % 360) * 3.14159f / 180.0f;
+    float dist = NPC_SPAWN_DIST + (rand() % 10);
+    
+    npcs[index].x = player.x + cosf(angle) * dist;
+    npcs[index].y = player.y + sinf(angle) * dist;
+    
+    npcs[index].x = fmaxf(2.0f, fminf(MAP_WIDTH - 2, npcs[index].x));
+    npcs[index].y = fmaxf(2.0f, fminf(MAP_HEIGHT - 2, npcs[index].y));
+    
+    if (isSolid((int)npcs[index].x, (int)npcs[index].y)) {
+        npcs[index].active = 0;
     }
 }
 
-void drawShots() {
-    for (int i = 0; i < MAX_PROJECTILES; i++) {
-        if (shots[i].active) {
-            int screenX = shots[i].x / 8;
-            int screenY = shots[i].y / 8;
-            if (screenX < 60 && screenY < 34) {
-                pspDebugScreenSetXY(screenX, screenY);
-                pspDebugScreenPrintf("-");
+void updateWantedLevel() {
+    if (player.wantedScore > 0) {
+        player.wantedTimer++;
+        if (player.wantedTimer >= WANTED_DECAY_TIME) {
+            player.wantedScore = 0;
+            player.wantedLevel = 0;
+            player.wantedTimer = 0;
+        }
+    }
+    
+    int newLevel = player.wantedScore / WANTED_STAR_THRESHOLD;
+    if (newLevel > MAX_WANTED_LEVEL) newLevel = MAX_WANTED_LEVEL;
+    player.wantedLevel = newLevel;
+    
+    if (player.wantedLevel > 0) {
+        int targetPolice = player.wantedLevel * 2;
+        int activePolice = 0;
+        
+        for (int i = 0; i < MAX_NPCS; i++) {
+            if (npcs[i].active && npcs[i].isPolice) activePolice++;
+        }
+        
+        for (int i = 0; i < MAX_NPCS && activePolice < targetPolice; i++) {
+            if (!npcs[i].active) {
+                spawnNPC(i, 1);
+                activePolice++;
             }
         }
     }
 }
 
-void drawEnemies() {
-    for (int i = 0; i < MAX_ENEMIES; i++) {
-        Enemy *e = &enemies[i];
-        if (!e->alive) continue;
-
-        int screenX = e->x / 8;
-        int screenY = e->y / 8;
-        if (screenX >= 60 || screenY >= 34) continue;
-
-        pspDebugScreenSetXY(screenX, screenY);
-        pspDebugScreenPrintf("E");
-
-        int hpBarX = (e->x - 8) / 8;
-        int hpBarY = (e->y - 16) / 8;
-        if (hpBarX >= 0 && hpBarX < 60 && hpBarY >= 0 && hpBarY < 34) {
-            pspDebugScreenSetXY(hpBarX, hpBarY);
-            for (int h = 0; h < e->hp; h++) pspDebugScreenPrintf("*");
+void updateNPCs() {
+    for (int i = 0; i < MAX_NPCS; i++) {
+        if (!npcs[i].active) continue;
+        
+        if (npcs[i].isPolice && player.wantedLevel > 0) {
+            float dx = player.x - npcs[i].x;
+            float dy = player.y - npcs[i].y;
+            float dist = sqrtf(dx * dx + dy * dy);
+            
+            if (dist > 0.1f) {
+                float speed = NPC_SPEED + (player.wantedLevel * 0.05f);
+                float nx = npcs[i].x + (dx / dist) * speed;
+                float ny = npcs[i].y + (dy / dist) * speed;
+                
+                if (!isSolid((int)nx, (int)npcs[i].y)) {
+                    npcs[i].x = nx;
+                }
+                if (!isSolid((int)npcs[i].x, (int)ny)) {
+                    npcs[i].y = ny;
+                }
+            }
+            
+            if (dist < 1.5f) {
+                player.hp--;
+                player.wantedTimer = 0;
+            }
+        } else {
+            npcs[i].x += ((rand() % 3) - 1) * 0.1f;
+            npcs[i].y += ((rand() % 3) - 1) * 0.1f;
         }
-
-        if (e->hitTimer > 0) {
-            int hitX = (e->x - 8) / 8;
-            int hitY = (e->y + 16) / 8;
-            if (hitX >= 0 && hitX < 60 && hitY >= 0 && hitY < 34) {
-                pspDebugScreenSetXY(hitX, hitY);
-                pspDebugScreenPrintf("Hit!");
+        
+        float camDistX = npcs[i].x - cameraX - SCREEN_W / 2;
+        float camDistY = npcs[i].y - cameraY - SCREEN_H / 2;
+        if (fabsf(camDistX) > SCREEN_W || fabsf(camDistY) > SCREEN_H) {
+            if (!npcs[i].isPolice) {
+                npcs[i].active = 0;
             }
         }
     }
 }
 
-void drawPlayer() {
-    if (player.invincibleTimer % 6 < 3 || player.invincibleTimer == 0) {
-        int screenX = player.x / 8;
-        int screenY = player.y / 8;
-        if (screenX < 60 && screenY < 34) {
+void initGame() {
+    initMap();
+    
+    int startX = ROAD_SPACING + 2;
+    int startY = ROAD_SPACING + 2;
+    while (isSolid(startX, startY) && startX < MAP_WIDTH) {
+        startX++;
+        if (isSolid(startX, startY)) {
+            startX = ROAD_SPACING + 2;
+            startY++;
+        }
+    }
+    
+    player.x = (float)startX;
+    player.y = (float)startY;
+    player.hp = MAX_PLAYER_HP;
+    player.inVehicle = 0;
+    player.vehicleIndex = -1;
+    player.wantedLevel = 0;
+    player.wantedScore = 0;
+    player.wantedTimer = 0;
+    
+    for (int i = 0; i < MAX_VEHICLES; i++) {
+        spawnVehicle(i);
+    }
+    
+    for (int i = 0; i < MAX_NPCS; i++) {
+        npcs[i].active = 0;
+    }
+    
+    score = 0;
+    frameCount = 0;
+    gameState = 0;
+}
+
+void resetGame() {
+    initGame();
+}
+
+void updateCamera() {
+    cameraX = player.x - SCREEN_W / 2;
+    cameraY = player.y - SCREEN_H / 2;
+    
+    if (cameraX < 0) cameraX = 0;
+    if (cameraY < 0) cameraY = 0;
+    if (cameraX > MAP_WIDTH - SCREEN_W) cameraX = MAP_WIDTH - SCREEN_W;
+    if (cameraY > MAP_HEIGHT - SCREEN_H) cameraY = MAP_HEIGHT - SCREEN_H;
+}
+
+char getVehicleChar(int type) {
+    switch (type) {
+        case 0: return 'v';
+        case 1: return 'V';
+        default: return 'c';
+    }
+}
+
+char getNPCChar(NPC *npc) {
+    if (npc->isPolice) return 'E';
+    return 'N';
+}
+
+void drawFrame() {
+    for (int row = 0; row < SCREEN_H; row++) {
+        int mapY = (int)(cameraY + row);
+        if (mapY < 0 || mapY >= MAP_HEIGHT) {
+            memset(lineBuffer, ' ', SCREEN_W);
+            lineBuffer[SCREEN_W] = '\0';
+        } else {
+            for (int col = 0; col < SCREEN_W; col++) {
+                int mapX = (int)(cameraX + col);
+                if (mapX < 0 || mapX >= MAP_WIDTH) {
+                    lineBuffer[col] = ' ';
+                } else {
+                    lineBuffer[col] = worldMap[mapY][mapX];
+                }
+            }
+            lineBuffer[SCREEN_W] = '\0';
+        }
+        
+        pspDebugScreenSetXY(0, row);
+        pspDebugScreenPrintf("%s", lineBuffer);
+    }
+    
+    for (int i = 0; i < MAX_VEHICLES; i++) {
+        if (!vehicles[i].active) continue;
+        
+        int screenX = (int)(vehicles[i].x - cameraX);
+        int screenY = (int)(vehicles[i].y - cameraY);
+        
+        if (screenX >= 0 && screenX < SCREEN_W && screenY >= 0 && screenY < SCREEN_H) {
             pspDebugScreenSetXY(screenX, screenY);
+            pspDebugScreenPrintf("%c", getVehicleChar(vehicles[i].type));
+        }
+    }
+    
+    for (int i = 0; i < MAX_NPCS; i++) {
+        if (!npcs[i].active) continue;
+        
+        int screenX = (int)(npcs[i].x - cameraX);
+        int screenY = (int)(npcs[i].y - cameraY);
+        
+        if (screenX >= 0 && screenX < SCREEN_W && screenY >= 0 && screenY < SCREEN_H) {
+            pspDebugScreenSetXY(screenX, screenY);
+            pspDebugScreenPrintf("%c", getNPCChar(&npcs[i]));
+        }
+    }
+    
+    int playerScreenX = (int)(player.x - cameraX);
+    int playerScreenY = (int)(player.y - cameraY);
+    
+    if (playerScreenX >= 0 && playerScreenX < SCREEN_W && playerScreenY >= 0 && playerScreenY < SCREEN_H) {
+        pspDebugScreenSetXY(playerScreenX, playerScreenY);
+        if (player.inVehicle) {
+            pspDebugScreenPrintf("@");
+        } else {
             pspDebugScreenPrintf("P");
         }
     }
@@ -310,92 +378,185 @@ void drawPlayer() {
 
 void drawHUD() {
     pspDebugScreenSetXY(0, 0);
-    pspDebugScreenPrintf("HP: ");
+    pspDebugScreenPrintf("HP:");
     for (int i = 0; i < MAX_PLAYER_HP; i++) {
-        if (i < player.hp) pspDebugScreenPrintf("\x03 ");
-        else pspDebugScreenPrintf("- ");
+        if (i < player.hp) pspDebugScreenPrintf("\x03");
+        else pspDebugScreenPrintf("-");
     }
-    pspDebugScreenPrintf(" Score: %d/%d", score, KILLS_TO_WIN);
+    
+    pspDebugScreenSetXY(15, 0);
+    if (player.wantedLevel > 0) {
+        pspDebugScreenPrintf("[");
+        for (int i = 0; i < player.wantedLevel; i++) {
+            pspDebugScreenPrintf("*");
+        }
+        pspDebugScreenPrintf("]");
+    }
+    
+    pspDebugScreenSetXY(35, 0);
+    if (player.inVehicle) {
+        pspDebugScreenPrintf("[IN CAR]");
+    } else {
+        pspDebugScreenPrintf("        ");
+    }
 }
 
-void drawMiniMap() {
-    int mapBaseX = 45;
-    int mapBaseY = 0;
-
-    pspDebugScreenSetXY(mapBaseX, mapBaseY);
-    pspDebugScreenPrintf("Map:");
-
-    int mapRow = mapBaseY + 1;
-    pspDebugScreenSetXY(mapBaseX, mapRow);
-    for (int i = 0; i < 12; i++) pspDebugScreenPrintf(".");
-
-    for (int i = 0; i < MAX_ENEMIES; i++) {
-        if (enemies[i].alive) {
-            int pos = enemies[i].x * 12 / WORLD_WIDTH;
-            int drawX = mapBaseX + pos;
-            if (drawX < 60 && mapRow < 34) {
-                pspDebugScreenSetXY(drawX, mapRow);
-                pspDebugScreenPrintf("e");
+void handleInput(SceCtrlData *pad) {
+    float speed = player.inVehicle ? VEHICLE_SPEED : PLAYER_SPEED;
+    float newX = player.x;
+    float newY = player.y;
+    
+    if (pad->Buttons & PSP_CTRL_UP) newY -= speed;
+    if (pad->Buttons & PSP_CTRL_DOWN) newY += speed;
+    if (pad->Buttons & PSP_CTRL_LEFT) newX -= speed;
+    if (pad->Buttons & PSP_CTRL_RIGHT) newX += speed;
+    
+    if (newX < 1) newX = 1;
+    if (newX > MAP_WIDTH - 2) newX = MAP_WIDTH - 2;
+    if (newY < 1) newY = 1;
+    if (newY > MAP_HEIGHT - 2) newY = MAP_HEIGHT - 2;
+    
+    int canMove = 1;
+    if (isSolid((int)newX, (int)player.y)) {
+        canMove = 0;
+    }
+    if (isSolid((int)player.x, (int)newY)) {
+        canMove = 0;
+    }
+    
+    if (canMove) {
+        player.x = newX;
+        player.y = newY;
+    }
+    
+    static int prevCircle = 0;
+    int circlePressed = (pad->Buttons & PSP_CTRL_CIRCLE) && !prevCircle;
+    prevCircle = (pad->Buttons & PSP_CTRL_CIRCLE) ? 1 : 0;
+    
+    if (circlePressed) {
+        if (player.inVehicle) {
+            player.inVehicle = 0;
+            vehicles[player.vehicleIndex].active = 1;
+            vehicles[player.vehicleIndex].x = player.x;
+            vehicles[player.vehicleIndex].y = player.y;
+            player.vehicleIndex = -1;
+            
+            int attempts = 0;
+            while (isSolid((int)player.x, (int)player.y) && attempts < 4) {
+                if (!isSolid((int)player.x + 1, (int)player.y)) player.x += 1;
+                else if (!isSolid((int)player.x - 1, (int)player.y)) player.x -= 1;
+                else if (!isSolid((int)player.x, (int)player.y + 1)) player.y += 1;
+                else if (!isSolid((int)player.x, (int)player.y - 1)) player.y -= 1;
+                attempts++;
+            }
+        } else {
+            for (int i = 0; i < MAX_VEHICLES; i++) {
+                if (vehicles[i].active) {
+                    float dx = vehicles[i].x - player.x;
+                    float dy = vehicles[i].y - player.y;
+                    float dist = sqrtf(dx * dx + dy * dy);
+                    
+                    if (dist < VEHICLE_ENTER_DIST) {
+                        player.inVehicle = 1;
+                        player.vehicleIndex = i;
+                        vehicles[i].active = 0;
+                        break;
+                    }
+                }
             }
         }
     }
+}
 
-    int ppos = player.x * 12 / WORLD_WIDTH;
-    int pDrawX = mapBaseX + ppos;
-    if (pDrawX < 60 && mapRow < 34) {
-        pspDebugScreenSetXY(pDrawX, mapRow);
-        pspDebugScreenPrintf("P");
+void showTitleScreen() {
+    int blink = 0;
+    while (1) {
+        pspDebugScreenClear();
+        pspDebugScreenSetXY(15, 10);
+        pspDebugScreenPrintf("=== GTA MONOLITH ===");
+        
+        pspDebugScreenSetXY(10, 13);
+        pspDebugScreenPrintf("Open World Action Game");
+        
+        pspDebugScreenSetXY(8, 16);
+        pspDebugScreenPrintf("D-Pad: Move  O: Enter/Exit Car");
+        
+        if (blink < 30) {
+            pspDebugScreenSetXY(12, 20);
+            pspDebugScreenPrintf("Press START to Begin");
+        }
+        
+        blink = (blink + 1) % 60;
+        
+        SceCtrlData pad;
+        sceCtrlReadBufferPositive(&pad, 1);
+        if (pad.Buttons & PSP_CTRL_START) break;
+        sceDisplayWaitVblankStart();
     }
 }
 
-// Game Loop
+void showGameOverScreen() {
+    int blink = 0;
+    while (1) {
+        pspDebugScreenClear();
+        pspDebugScreenSetXY(18, 12);
+        pspDebugScreenPrintf("WASTED");
+        
+        pspDebugScreenSetXY(12, 15);
+        pspDebugScreenPrintf("Score: %d", score);
+        
+        if (blink < 30) {
+            pspDebugScreenSetXY(10, 18);
+            pspDebugScreenPrintf("Press START to Restart");
+        }
+        
+        blink = (blink + 1) % 60;
+        
+        SceCtrlData pad;
+        sceCtrlReadBufferPositive(&pad, 1);
+        if (pad.Buttons & PSP_CTRL_START) {
+            resetGame();
+            break;
+        }
+        sceDisplayWaitVblankStart();
+    }
+}
+
 int main() {
     pspDebugScreenInit();
     SetupCallbacks();
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
-
+    
+    srand((unsigned int)sceKernelGetSystemTimeLow());
+    
     initGame();
-
     showTitleScreen();
-
+    
     while (1) {
         SceCtrlData pad;
         sceCtrlReadBufferPositive(&pad, 1);
-
-        if (pad.Buttons & PSP_CTRL_UP) player.y -= 2;
-        if (pad.Buttons & PSP_CTRL_DOWN) player.y += 2;
-        if (pad.Buttons & PSP_CTRL_LEFT) player.x -= 2;
-        if (pad.Buttons & PSP_CTRL_RIGHT) player.x += 2;
-
-        // Clamp player position to stay on screen and away from HUD
-        if (player.x < 8) player.x = 8;
-        if (player.x > 472) player.x = 472;
-        if (player.y < 32) player.y = 32;
-        if (player.y > 264) player.y = 264;
-
-        if (pad.Buttons & PSP_CTRL_CROSS) fireShot();
-        if (player.invincibleTimer > 0) player.invincibleTimer--;
-        if (fireCooldown > 0) fireCooldown--;
-
-        updateShots();
-        updateEnemies();
-
-        pspDebugScreenClear();
+        
+        handleInput(&pad);
+        updateCamera();
+        updateNPCs();
+        updateWantedLevel();
+        
+        if (pad.Buttons & PSP_CTRL_SQUARE) {
+            player.wantedScore += 10;
+            player.wantedTimer = 0;
+        }
+        
+        drawFrame();
         drawHUD();
-        drawPlayer();
-        drawEnemies();
-        drawShots();
-        drawMiniMap();
-
+        
         if (player.hp <= 0) {
             showGameOverScreen();
-        } else if (score >= KILLS_TO_WIN) {
-            showWinScreen();
         }
-
+        
+        frameCount++;
         sceDisplayWaitVblankStart();
     }
-
+    
     return 0;
 }
