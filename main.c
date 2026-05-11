@@ -317,12 +317,53 @@ char getNPCChar(NPC *npc) {
     return 'N';
 }
 
+typedef struct {
+    int x, y;
+    char c;
+} EntityDraw;
+
 void drawFrame() {
+    EntityDraw draws[MAX_VEHICLES + MAX_NPCS + 1];
+    int drawCount = 0;
+    
+    for (int i = 0; i < MAX_VEHICLES; i++) {
+        if (!vehicles[i].active) continue;
+        int sx = (int)(vehicles[i].x - cameraX);
+        int sy = (int)(vehicles[i].y - cameraY);
+        if (sx >= 0 && sx < SCREEN_W && sy >= 0 && sy < SCREEN_H) {
+            draws[drawCount].x = sx;
+            draws[drawCount].y = sy;
+            draws[drawCount].c = getVehicleChar(vehicles[i].type);
+            drawCount++;
+        }
+    }
+    
+    for (int i = 0; i < MAX_NPCS; i++) {
+        if (!npcs[i].active) continue;
+        int sx = (int)(npcs[i].x - cameraX);
+        int sy = (int)(npcs[i].y - cameraY);
+        if (sx >= 0 && sx < SCREEN_W && sy >= 0 && sy < SCREEN_H) {
+            draws[drawCount].x = sx;
+            draws[drawCount].y = sy;
+            draws[drawCount].c = getNPCChar(&npcs[i]);
+            drawCount++;
+        }
+    }
+    
+    int psx = (int)(player.x - cameraX);
+    int psy = (int)(player.y - cameraY);
+    if (psx >= 0 && psx < SCREEN_W && psy >= 0 && psy < SCREEN_H) {
+        draws[drawCount].x = psx;
+        draws[drawCount].y = psy;
+        draws[drawCount].c = player.inVehicle ? '@' : 'P';
+        drawCount++;
+    }
+    
     for (int row = 0; row < SCREEN_H; row++) {
         int mapY = (int)(cameraY + row);
+        
         if (mapY < 0 || mapY >= MAP_HEIGHT) {
             memset(lineBuffer, ' ', SCREEN_W);
-            lineBuffer[SCREEN_W] = '\0';
         } else {
             for (int col = 0; col < SCREEN_W; col++) {
                 int mapX = (int)(cameraX + col);
@@ -332,47 +373,17 @@ void drawFrame() {
                     lineBuffer[col] = worldMap[mapY][mapX];
                 }
             }
-            lineBuffer[SCREEN_W] = '\0';
         }
         
+        for (int i = 0; i < drawCount; i++) {
+            if (draws[i].y == row) {
+                lineBuffer[draws[i].x] = draws[i].c;
+            }
+        }
+        
+        lineBuffer[SCREEN_W] = '\0';
         pspDebugScreenSetXY(0, row);
         pspDebugScreenPrintf("%s", lineBuffer);
-    }
-    
-    for (int i = 0; i < MAX_VEHICLES; i++) {
-        if (!vehicles[i].active) continue;
-        
-        int screenX = (int)(vehicles[i].x - cameraX);
-        int screenY = (int)(vehicles[i].y - cameraY);
-        
-        if (screenX >= 0 && screenX < SCREEN_W && screenY >= 0 && screenY < SCREEN_H) {
-            pspDebugScreenSetXY(screenX, screenY);
-            pspDebugScreenPrintf("%c", getVehicleChar(vehicles[i].type));
-        }
-    }
-    
-    for (int i = 0; i < MAX_NPCS; i++) {
-        if (!npcs[i].active) continue;
-        
-        int screenX = (int)(npcs[i].x - cameraX);
-        int screenY = (int)(npcs[i].y - cameraY);
-        
-        if (screenX >= 0 && screenX < SCREEN_W && screenY >= 0 && screenY < SCREEN_H) {
-            pspDebugScreenSetXY(screenX, screenY);
-            pspDebugScreenPrintf("%c", getNPCChar(&npcs[i]));
-        }
-    }
-    
-    int playerScreenX = (int)(player.x - cameraX);
-    int playerScreenY = (int)(player.y - cameraY);
-    
-    if (playerScreenX >= 0 && playerScreenX < SCREEN_W && playerScreenY >= 0 && playerScreenY < SCREEN_H) {
-        pspDebugScreenSetXY(playerScreenX, playerScreenY);
-        if (player.inVehicle) {
-            pspDebugScreenPrintf("@");
-        } else {
-            pspDebugScreenPrintf("P");
-        }
     }
 }
 
